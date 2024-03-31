@@ -1,16 +1,12 @@
 import os
 
+
 def make_dirs(today_date, station):
-    if (
-        os.path.exists(f"/home/aevans/convLSTM/src/data/visuals/{today_date}")
-        == False
-    ):
+    if os.path.exists(f"/home/aevans/convLSTM/src/data/visuals/{today_date}") == False:
         os.mkdir(f"/home/aevans/convLSTM/src/data/visuals/{today_date}")
         os.mkdir(f"/home/aevans/convLSTM/src/data/temp_df/{today_date}")
     if (
-        os.path.exists(
-            f"/home/aevans/convLSTM/src/data/visuals/{today_date}/{station}"
-        )
+        os.path.exists(f"/home/aevans/convLSTM/src/data/visuals/{today_date}/{station}")
         == False
     ):
         os.mkdir(f"/home/aevans/convLSTM/src/data/visuals/{today_date}/{station}")

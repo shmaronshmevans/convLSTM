@@ -13,11 +13,11 @@ from comet_ml import Experiment, Artifact
 from comet_ml.integration.pytorch import log_model
 import gc
 
-
-from src import model
+import model
 
 from processing import create_data_for_convLSTM
 from processing import get_time_title
+from evaluate import save_output
 
 
 class MultiStationDataset(Dataset):
@@ -40,8 +40,7 @@ class MultiStationDataset(Dataset):
     def __len__(self):
         shaper = min(
             [
-                self.dataframes[i].values.shape[0]
-                - (self.sequence_length)
+                self.dataframes[i].values.shape[0] - (self.sequence_length)
                 for i in range(len(self.dataframes))
             ]
         )
@@ -52,9 +51,7 @@ class MultiStationDataset(Dataset):
         x = torch.stack(
             [
                 torch.tensor(
-                    dataframe[self.features].values[
-                        i : (i + self.sequence_length)
-                    ]
+                    dataframe[self.features].values[i : (i + self.sequence_length)]
                 )
                 for dataframe in self.dataframes
             ]
@@ -64,9 +61,7 @@ class MultiStationDataset(Dataset):
         y = torch.stack(
             [
                 torch.tensor(
-                    dataframe[self.target].values[
-                        i : i + self.sequence_length
-                    ]
+                    dataframe[self.target].values[i : i + self.sequence_length]
                 )
                 for dataframe in self.dataframes
             ]
@@ -79,10 +74,11 @@ class MultiStationDataset(Dataset):
         x = x.permute(1, 2, 0)
         return x, y
 
+
 def train_model(data_loader, model, optimizer, device, epoch, loss_func):
     num_batches = len(data_loader)
     total_loss = 0
-    model.train() 
+    model.train()
 
     for batch_idx, (X, y) in enumerate(data_loader):
         X = X.unsqueeze(3)
@@ -129,7 +125,7 @@ def test_model(data_loader, model, device, epoch, loss_func):
         X, y = X.to(device), y.to(device)
         # Forward pass to obtain model predictions.
         output, last_states = model(X)
-    
+
         # Compute loss and add it to the total loss.
         total_loss += loss_func(output, y).item()
         gc.collect()
@@ -142,11 +138,11 @@ def test_model(data_loader, model, device, epoch, loss_func):
 
 
 def main(EPOCHS, BATCH_SIZE, LEARNING_RATE, CLIM_DIV, sequence_length, forecast_hour):
-    # experiment = Experiment(
-    #     api_key="leAiWyR5Ck7tkdiHIT7n6QWNa",
-    #     project_name="conformer_beta",
-    #     workspace="shmaronshmevans",
-    # )
+    experiment = Experiment(
+        api_key="leAiWyR5Ck7tkdiHIT7n6QWNa",
+        project_name="convLSTM_beta",
+        workspace="shmaronshmevans",
+    )
     torch.manual_seed(101)
 
     # Use GPU if available
@@ -154,15 +150,26 @@ def main(EPOCHS, BATCH_SIZE, LEARNING_RATE, CLIM_DIV, sequence_length, forecast_
     today_date, today_date_hr = get_time_title.get_time_title(CLIM_DIV)
     # create data
     df_train_ls, df_test_ls, features, stations = (
-        create_data_for_convLSTM.create_data_for_model(CLIM_DIV, today_date, forecast_hour)
+        create_data_for_convLSTM.create_data_for_model(
+            CLIM_DIV, today_date, forecast_hour
+        )
     )
 
     # load datasets
-    train_dataset = MultiStationDataset(df_train_ls, "target_error", features, sequence_length, forecast_hour)
-    test_dataset = MultiStationDataset(df_test_ls, "target_error", features, sequence_length, forecast_hour)
+    train_dataset = MultiStationDataset(
+        df_train_ls, "target_error", features, sequence_length, forecast_hour
+    )
+    test_dataset = MultiStationDataset(
+        df_test_ls, "target_error", features, sequence_length, forecast_hour
+    )
 
     # define model parameters
-    ml = model.ConvLSTM(input_dim = len(features), hidden_dim = 36, kernel_size = (3,3), num_layers = 4)
+    ml = model.ConvLSTM(
+        input_dim=len(features),
+        hidden_dim=len(features),
+        kernel_size=(3, 3),
+        num_layers=4,
+    )
     if torch.cuda.is_available():
         ml.cuda()
 
@@ -179,11 +186,12 @@ def main(EPOCHS, BATCH_SIZE, LEARNING_RATE, CLIM_DIV, sequence_length, forecast_
         test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4
     )
 
-    # hyper_params = {
-    #     "learning_rate": LEARNING_RATE,
-    #     "batch_size": BATCH_SIZE,
-    #     "clim_div": str(CLIM_DIV),
-    # }
+    hyper_params = {
+        "learning_rate": LEARNING_RATE,
+        "batch_size": BATCH_SIZE,
+        "clim_div": str(CLIM_DIV),
+        "forecast_hour": forecast_hour,
+    }
     # early_stopper = EarlyStopper(20)
 
     for ix_epoch in range(1, EPOCHS + 1):
@@ -193,26 +201,29 @@ def main(EPOCHS, BATCH_SIZE, LEARNING_RATE, CLIM_DIV, sequence_length, forecast_
         )
         test_loss = test_model(test_loader, ml, device, ix_epoch, loss_func)
         print()
-        # experiment.set_epoch(ix_epoch)
-        # experiment.log_metric("test_loss", test_loss)
-        # experiment.log_metric("train_loss", train_loss)
-        # experiment.log_metrics(hyper_params, epoch=ix_epoch)
+        experiment.set_epoch(ix_epoch)
+        experiment.log_metric("test_loss", test_loss)
+        experiment.log_metric("train_loss", train_loss)
+        experiment.log_metrics(hyper_params, epoch=ix_epoch)
         # if early_stopper.early_stop(test_loss):
         #     print(f"Early stopping at epoch {ix_epoch}")
         #     break
 
-    # eval_model(
-    #     train_loader,
-    #     test_loader,
-    #     model,
-    #     device,
-    #     df_train_ls,
-    #     df_test_ls,
-    #     stations,
-    #     today_date,
-    #     CLIM_DIV,
-    # )
+    save_output.eval_model(
+        train_loader,
+        test_loader,
+        ml,
+        device,
+        df_train_ls,
+        df_test_ls,
+        stations,
+        today_date,
+        today_date_hr,
+        CLIM_DIV,
+        forecast_hour,
+        sequence_length,
+    )
     experiment.end()
 
 
-main(15, int(200), 7e-4, "Mohawk Valley", 120, 4)
+main(100, int(50e2), 7e-4, "Mohawk Valley", 120, 4)

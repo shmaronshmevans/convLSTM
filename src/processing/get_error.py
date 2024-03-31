@@ -32,5 +32,5 @@ def nwp_error(target, df):
     # Calculate the 'target_error' by subtracting NYSM data from NWP model data.
     target_error = df[f"{target}"] - df[f"{nysm_var}"]
     df.insert(loc=(1), column=f"target_error", value=target_error)
-    df = df.drop(df[df['target_error'] > 40].index)
+    df = df.drop(df[df["target_error"] > 40].index)
     return df
