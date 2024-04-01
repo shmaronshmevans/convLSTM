@@ -167,7 +167,7 @@ class ConvLSTM(nn.Module):
         kernel_size,
         num_layers,
         batch_first=True,
-        bias=True,
+        bias=False,
         return_all_layers=False,
     ):
         super(ConvLSTM, self).__init__()

@@ -1,0 +1,6 @@
+data
+*.csv
+*.parquet
+*.sh
+*.png
+builds

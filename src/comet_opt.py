@@ -11,6 +11,7 @@ from comet_ml import Experiment, Artifact
 from comet_ml.integration.pytorch import log_model
 from comet_ml import Experiment, Artifact
 from comet_ml.integration.pytorch import log_model
+from comet_ml import Optimizer
 import gc
 
 import model
@@ -138,14 +139,14 @@ def test_model(data_loader, model, device, epoch, loss_func):
 
 
 def main(
-    EPOCHS,
-    BATCH_SIZE,
     LEARNING_RATE,
-    CLIM_DIV,
     sequence_length,
-    forecast_hour,
     num_layers,
     kernel_size,
+    forecast_hour=4,
+    EPOCHS = 100,
+    BATCH_SIZE = int(40e2),
+    CLIM_DIV='Mohawk Valley',
 ):
     experiment = Experiment(
         api_key="leAiWyR5Ck7tkdiHIT7n6QWNa",
@@ -186,7 +187,6 @@ def main(
     optimizer = torch.optim.Adam(ml.parameters(), lr=LEARNING_RATE)
     # MSE Loss
     loss_func = nn.MSELoss()
-    # loss_func = FocalLossV3()
 
     train_loader = DataLoader(
         train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4
@@ -203,7 +203,6 @@ def main(
         "num_layers": num_layers,
         "kernel_size": kernel_size,
     }
-    # early_stopper = EarlyStopper(20)
 
     for ix_epoch in range(1, EPOCHS + 1):
         print("Epoch", ix_epoch)
@@ -216,34 +215,41 @@ def main(
         experiment.log_metric("test_loss", test_loss)
         experiment.log_metric("train_loss", train_loss)
         experiment.log_metrics(hyper_params, epoch=ix_epoch)
-        # if early_stopper.early_stop(test_loss):
-        #     print(f"Early stopping at epoch {ix_epoch}")
-        #     break
 
-    save_output.eval_model(
-        train_loader,
-        test_loader,
-        ml,
-        device,
-        df_train_ls,
-        df_test_ls,
-        stations,
-        today_date,
-        today_date_hr,
-        CLIM_DIV,
-        forecast_hour,
-        sequence_length,
+    return test_loss
+
+config = {
+    # Pick the Bayes algorithm:
+    "algorithm": "bayes",
+    # Declare what to optimize, and how:
+    "spec": {
+        "metric": "loss",
+        "objective": "minimize",
+    },
+    # Declare your hyperparameters:
+    "parameters": {
+        "num_layers": {"type": "integer", "min": 1, "max": 20},
+        "kernel_size": {"type": "discrete", "values": [(1,1), (2,2), (3,3), (4,4), (5,5), (6,6), (7,7)]},
+        "sequence_length": {"type": "integer", "min": 36, "max": 500},
+        "learning_Rate": {"type": "float", "min": 5e-20, "max": 1e-3},
+    },
+    "trials": 30,
+}
+
+print("!!! begin optimizer !!!")
+
+opt = Optimizer(config)
+
+# Finally, get experiments, and train your models:
+for experiment in opt.get_experiments(
+    project_name="hyperparameter-tuning-for-convLSTM"
+):
+    loss = main(
+        LEARNING_RATE=experiment.get_parameter("learning_rate"),
+        sequence_length=experiment.get_parameter("sequence_length")
+        num_layers=experiment.get_parameter("num_layers"),
+        kernel_size=experiment.get_parameter("kernel_size"),
     )
+
+    experiment.log_metric("loss", loss)
     experiment.end()
-
-
-main(
-    EPOCHS=100,
-    BATCH_SIZE=int(40e2),
-    LEARNING_RATE=7e-4,
-    CLIM_DIV="Mohawk Valley",
-    sequence_length=120,
-    forecast_hour=4,
-    num_layers=2,
-    kernel_size=(2, 2),
-)
