@@ -144,15 +144,10 @@ def main(
     num_layers,
     kernel_size,
     forecast_hour=4,
-    EPOCHS = 100,
-    BATCH_SIZE = int(40e2),
-    CLIM_DIV='Mohawk Valley',
+    EPOCHS=10,
+    BATCH_SIZE=int(100),
+    CLIM_DIV="Mohawk Valley",
 ):
-    experiment = Experiment(
-        api_key="leAiWyR5Ck7tkdiHIT7n6QWNa",
-        project_name="convLSTM_beta",
-        workspace="shmaronshmevans",
-    )
     torch.manual_seed(101)
 
     # Use GPU if available
@@ -173,11 +168,13 @@ def main(
         df_test_ls, "target_error", features, sequence_length, forecast_hour
     )
 
+    kernel = (kernel_size, kernel_size)
+    print(kernel)
     # define model parameters
     ml = model.ConvLSTM(
         input_dim=len(features),
         hidden_dim=len(features),
-        kernel_size=kernel_size,
+        kernel_size=kernel,
         num_layers=num_layers,
     )
     if torch.cuda.is_available():
@@ -201,7 +198,7 @@ def main(
         "clim_div": str(CLIM_DIV),
         "forecast_hour": forecast_hour,
         "num_layers": num_layers,
-        "kernel_size": kernel_size,
+        "kernel_size": kernel,
     }
 
     for ix_epoch in range(1, EPOCHS + 1):
@@ -218,6 +215,7 @@ def main(
 
     return test_loss
 
+
 config = {
     # Pick the Bayes algorithm:
     "algorithm": "bayes",
@@ -229,9 +227,9 @@ config = {
     # Declare your hyperparameters:
     "parameters": {
         "num_layers": {"type": "integer", "min": 1, "max": 20},
-        "kernel_size": {"type": "discrete", "values": [(1,1), (2,2), (3,3), (4,4), (5,5), (6,6), (7,7)]},
+        "kernel_size": {"type": "integer", "min": 1, "max": 20},
         "sequence_length": {"type": "integer", "min": 36, "max": 500},
-        "learning_Rate": {"type": "float", "min": 5e-20, "max": 1e-3},
+        "learning_rate": {"type": "float", "min": 5e-20, "max": 1e-3},
     },
     "trials": 30,
 }
@@ -246,7 +244,7 @@ for experiment in opt.get_experiments(
 ):
     loss = main(
         LEARNING_RATE=experiment.get_parameter("learning_rate"),
-        sequence_length=experiment.get_parameter("sequence_length")
+        sequence_length=experiment.get_parameter("sequence_length"),
         num_layers=experiment.get_parameter("num_layers"),
         kernel_size=experiment.get_parameter("kernel_size"),
     )

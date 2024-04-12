@@ -167,7 +167,7 @@ class ConvLSTM(nn.Module):
         kernel_size,
         num_layers,
         batch_first=True,
-        bias=False,
+        bias=True,
         return_all_layers=False,
     ):
         super(ConvLSTM, self).__init__()
@@ -264,9 +264,8 @@ class ConvLSTM(nn.Module):
 
         # Reshape output to match target output shape
         output = layer_output_list[-1]
-        output = output.squeeze().permute(0, 1, 3, 2)
-        output = output.transpose(1, 2)[:, :, :, 0]
-
+        output = output.squeeze().permute(0, 1, 3, 2, 4)
+        output = output.transpose(1, 2)[:, :, :, 0, 0]
         return output, last_state_list
 
     def _init_hidden(self, batch_size, image_size):

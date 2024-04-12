@@ -2,15 +2,17 @@ import sys
 
 sys.path.append("..")
 
+from comet_ml import Experiment, Artifact
+from comet_ml.integration.pytorch import log_model
+from comet_ml import Experiment, Artifact
+from comet_ml.integration.pytorch import log_model
+
 import torch.nn as nn
 import torch
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 import torch.optim as optim
-from comet_ml import Experiment, Artifact
-from comet_ml.integration.pytorch import log_model
-from comet_ml import Experiment, Artifact
-from comet_ml.integration.pytorch import log_model
+
 import gc
 
 import model
@@ -66,12 +68,16 @@ class MultiStationDataset(Dataset):
                 for dataframe in self.dataframes
             ]
         ).to(torch.float32)
-        # this is (batch, stations, future_steps)
-        x[-self.forecast_hour :, : self.nysm_vars] = x[
-            self.forecast_hour, : self.nysm_vars
-        ]  # check that this is setting the right positions to this value
-        # Transpose x to have dimensions [sequence_length, features, stations]
+
+        # this is (stations, seq_length, features)
+        x[:, -self.forecast_hour :, -self.nysm_vars :] = (
+            -999
+        )  # check that this is setting the right positions to this value
+
+        # Transpose x to have dimensions [sequence_length, features, stations, seq_length] for convolution
         x = x.permute(1, 2, 0)
+        x = x.unsqueeze(3)
+        x = x.expand(-1, -1, -1, x.size(0))
         return x, y
 
 
@@ -81,10 +87,8 @@ def train_model(data_loader, model, optimizer, device, epoch, loss_func):
     model.train()
 
     for batch_idx, (X, y) in enumerate(data_loader):
-        X = X.unsqueeze(3)
         # Move data and labels to the appropriate device (GPU/CPU).
         X, y = X.to(device), y.to(device)
-
         # Forward pass and loss computation.
         output, last_states = model(X)
         # Squeeze unnecessary dimensions and transpose output tensor
@@ -121,7 +125,6 @@ def test_model(data_loader, model, device, epoch, loss_func):
 
     for batch_idx, (X, y) in enumerate(data_loader):
         # Move data and labels to the appropriate device (GPU/CPU).
-        X = X.unsqueeze(3)
         X, y = X.to(device), y.to(device)
         # Forward pass to obtain model predictions.
         output, last_states = model(X)
@@ -146,6 +149,7 @@ def main(
     forecast_hour,
     num_layers,
     kernel_size,
+    single,
 ):
     experiment = Experiment(
         api_key="leAiWyR5Ck7tkdiHIT7n6QWNa",
@@ -160,7 +164,7 @@ def main(
     # create data
     df_train_ls, df_test_ls, features, stations = (
         create_data_for_convLSTM.create_data_for_model(
-            CLIM_DIV, today_date, forecast_hour
+            CLIM_DIV, today_date, forecast_hour, single
         )
     )
 
@@ -239,11 +243,12 @@ def main(
 
 main(
     EPOCHS=100,
-    BATCH_SIZE=int(40e2),
-    LEARNING_RATE=7e-4,
+    BATCH_SIZE=int(40),
+    LEARNING_RATE=7e-5,
     CLIM_DIV="Mohawk Valley",
     sequence_length=120,
     forecast_hour=4,
     num_layers=2,
-    kernel_size=(2, 2),
+    kernel_size=(3, 3),
+    single=False,
 )
