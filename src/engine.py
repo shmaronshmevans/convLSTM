@@ -12,73 +12,62 @@ import torch
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 import torch.optim as optim
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 import gc
 
 import model
 
 from processing import create_data_for_convLSTM
+from processing import read_in_images
 from processing import get_time_title
 from evaluate import save_output
 
+import numpy as np
 
-class MultiStationDataset(Dataset):
-    def __init__(
-        self, dataframes, target, features, sequence_length, forecast_hour, nysm_vars=14
-    ):
-        """
-        dataframes: list of station dataframes like in the SequenceDataset
-        target: target error
-        features: list of features for model
-        sequence_length: int
-        """
-        self.dataframes = dataframes
-        self.features = features
-        self.target = target
+
+class ImageSequenceDataset(Dataset):
+    def __init__(self, image_list, dataframe, target, sequence_length, transform=None):
+        self.image_list = image_list
+        self.dataframe = dataframe
+        self.transform = transform
         self.sequence_length = sequence_length
-        self.forecast_hour = forecast_hour
-        self.nysm_vars = nysm_vars
+        self.target = target
 
     def __len__(self):
-        shaper = min(
-            [
-                self.dataframes[i].values.shape[0] - (self.sequence_length)
-                for i in range(len(self.dataframes))
-            ]
-        )
-        return shaper
+        return len(self.image_list)
 
     def __getitem__(self, i):
-        # this is the preceeding sequence_length timesteps
-        x = torch.stack(
-            [
-                torch.tensor(
-                    dataframe[self.features].values[i : (i + self.sequence_length)]
-                )
-                for dataframe in self.dataframes
-            ]
-        ).to(torch.float32)
+        images = []
+        i_start = max(0, i - self.sequence_length + 1)
 
-        # stacking the sequences from each dataframe along a new axis, so the output is of shape (batch, stations (len(self.dataframes)), past_steps, features)
-        y = torch.stack(
-            [
-                torch.tensor(
-                    dataframe[self.target].values[i : i + self.sequence_length]
-                )
-                for dataframe in self.dataframes
-            ]
-        ).to(torch.float32)
+        for j in range(i_start, i + 1):
+            if j < len(self.image_list):
+                img_name = self.image_list[j]
+                image = np.load(img_name).astype(np.float32)
+                image = image[:, :, 3:]
+                if self.transform:
+                    image = self.transform(image)
+                images.append(torch.tensor(image))
+            else:
+                pad_image = torch.zeros_like(images[0])
+                images.append(pad_image)
 
-        # this is (stations, seq_length, features)
-        x[:, -self.forecast_hour :, -self.nysm_vars :] = (
-            -999
-        )  # check that this is setting the right positions to this value
+        while len(images) < self.sequence_length:
+            pad_image = torch.zeros_like(images[0])
+            images.insert(0, pad_image)
 
-        # Transpose x to have dimensions [sequence_length, features, stations, seq_length] for convolution
-        x = x.permute(1, 2, 0)
-        x = x.unsqueeze(3)
-        x = x.expand(-1, -1, -1, x.size(0))
-        return x, y
+        images = torch.stack(images)
+        images = images.to(torch.float32)
+
+        # Extract target values
+        y = self.dataframe[self.target].values[i_start : i + 1]
+        if len(y) < self.sequence_length:
+            pad_width = (self.sequence_length - len(y), 0)
+            y = np.pad(y, (pad_width, (0, 0)), "constant", constant_values=0)
+
+        y = torch.tensor(y).to(torch.float32)
+        return images, y
 
 
 def train_model(data_loader, model, optimizer, device, epoch, loss_func):
@@ -92,7 +81,7 @@ def train_model(data_loader, model, optimizer, device, epoch, loss_func):
         # Forward pass and loss computation.
         output, last_states = model(X)
         # Squeeze unnecessary dimensions and transpose output tensor
-        loss = loss_func(output, y)
+        loss = loss_func(output[:, -1, :], y.squeeze()[:, -1, :])
 
         # Zero the gradients, backward pass, and optimization step.
         optimizer.zero_grad()
@@ -126,11 +115,12 @@ def test_model(data_loader, model, device, epoch, loss_func):
     for batch_idx, (X, y) in enumerate(data_loader):
         # Move data and labels to the appropriate device (GPU/CPU).
         X, y = X.to(device), y.to(device)
+
         # Forward pass to obtain model predictions.
         output, last_states = model(X)
 
         # Compute loss and add it to the total loss.
-        total_loss += loss_func(output, y).item()
+        total_loss += loss_func(output[:, -1, :], y.squeeze()[:, -1, :]).item()
         gc.collect()
 
     # Calculate the average test loss.
@@ -162,35 +152,45 @@ def main(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     today_date, today_date_hr = get_time_title.get_time_title(CLIM_DIV)
     # create data
-    df_train_ls, df_test_ls, features, stations = (
-        create_data_for_convLSTM.create_data_for_model(
-            CLIM_DIV, today_date, forecast_hour, single
-        )
+    # df_train_ls, df_test_ls, features, stations = (
+    #     create_data_for_convLSTM.create_data_for_model(
+    #         CLIM_DIV, today_date, forecast_hour, single
+    #     )
+    # )
+
+    train_df, test_df, train_ims, test_ims, target, stations = (
+        read_in_images.create_data_for_model(CLIM_DIV)
     )
 
-    # load datasets
-    train_dataset = MultiStationDataset(
-        df_train_ls, "target_error", features, sequence_length, forecast_hour
-    )
-    test_dataset = MultiStationDataset(
-        df_test_ls, "target_error", features, sequence_length, forecast_hour
-    )
+    # # load datasets
+    # train_dataset = MultiStationDataset(
+    #     df_train_ls, "target_error", features, sequence_length, forecast_hour
+    # )
+    # test_dataset = MultiStationDataset(
+    #     df_test_ls, "target_error", features, sequence_length, forecast_hour
+    # )
+
+    train_dataset = ImageSequenceDataset(train_ims, train_df, target, sequence_length)
+    test_dataset = ImageSequenceDataset(test_ims, test_df, target, sequence_length)
 
     # define model parameters
     ml = model.ConvLSTM(
-        input_dim=len(features),
-        hidden_dim=len(features),
+        input_dim=int(26),
+        hidden_dim=[26, 26],
         kernel_size=kernel_size,
         num_layers=num_layers,
+        target=len(target),
+        future_steps=forecast_hour,
     )
     if torch.cuda.is_available():
         ml.cuda()
 
     # Adam Optimizer
-    optimizer = torch.optim.Adam(ml.parameters(), lr=LEARNING_RATE)
+    optimizer = torch.optim.AdamW(ml.parameters(), lr=LEARNING_RATE)
     # MSE Loss
     loss_func = nn.MSELoss()
     # loss_func = FocalLossV3()
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5)
 
     train_loader = DataLoader(
         train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4
@@ -220,6 +220,7 @@ def main(
         experiment.log_metric("test_loss", test_loss)
         experiment.log_metric("train_loss", train_loss)
         experiment.log_metrics(hyper_params, epoch=ix_epoch)
+        scheduler.step(test_loss)
         # if early_stopper.early_stop(test_loss):
         #     print(f"Early stopping at epoch {ix_epoch}")
         #     break
@@ -229,8 +230,9 @@ def main(
         test_loader,
         ml,
         device,
-        df_train_ls,
-        df_test_ls,
+        target,
+        train_df,
+        test_df,
         stations,
         today_date,
         today_date_hr,
@@ -243,10 +245,10 @@ def main(
 
 main(
     EPOCHS=100,
-    BATCH_SIZE=int(40),
+    BATCH_SIZE=int(48),
     LEARNING_RATE=7e-5,
     CLIM_DIV="Mohawk Valley",
-    sequence_length=120,
+    sequence_length=12,
     forecast_hour=4,
     num_layers=2,
     kernel_size=(3, 3),

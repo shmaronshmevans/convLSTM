@@ -61,6 +61,10 @@ class ConvLSTMCell(nn.Module):
         # Unpack current states
         h_cur, c_cur = cur_state
 
+        # Ensure input_tensor has the correct shape [batch_size, input_channels, height, width]
+        if input_tensor.size(1) != self.input_dim:
+            input_tensor = input_tensor.permute(0, 3, 1, 2)
+
         # Concatenate input tensor with previous hidden state along channel axis
         combined = torch.cat([input_tensor, h_cur], dim=1)
 
@@ -166,6 +170,8 @@ class ConvLSTM(nn.Module):
         hidden_dim,
         kernel_size,
         num_layers,
+        target,
+        future_steps,
         batch_first=True,
         bias=True,
         return_all_layers=False,
@@ -176,14 +182,16 @@ class ConvLSTM(nn.Module):
         self._check_kernel_size_consistency(kernel_size)
         kernel_size = self._extend_for_multilayer(kernel_size, num_layers)
         hidden_dim = self._extend_for_multilayer(hidden_dim, num_layers)
-        if not len(kernel_size) == len(hidden_dim) == num_layers:
-            raise ValueError("Inconsistent list length.")
+        # if not len(kernel_size) == len(hidden_dim) == num_layers:
+        #     raise ValueError("Inconsistent list length.")
 
         # Store parameters
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.kernel_size = kernel_size
         self.num_layers = num_layers
+        self.target = target
+        self.future_steps = future_steps
         self.batch_first = batch_first
         self.bias = bias
         self.return_all_layers = return_all_layers
@@ -201,6 +209,9 @@ class ConvLSTM(nn.Module):
                 )
             )
         self.cell_list = nn.ModuleList(cell_list)
+
+        # Define a fully connected layer to map the output to the desired shape
+        self.fc = nn.Linear(hidden_dim[-1], self.target)
 
     def forward(self, input_tensor, hidden_state=None):
         """
@@ -223,7 +234,7 @@ class ConvLSTM(nn.Module):
             input_tensor = input_tensor.permute(1, 0, 2, 3, 4)
 
         # Get dimensions of input tensor
-        b, t, c, h, w = input_tensor.size()
+        b, t, h, w, c = input_tensor.size()
 
         # Initialize hidden states
         if hidden_state is not None:
@@ -257,16 +268,42 @@ class ConvLSTM(nn.Module):
             layer_output_list.append(layer_output)
             last_state_list.append([h, c])
 
-        # Return output and last states
-        if not self.return_all_layers:
-            layer_output_list = layer_output_list[-1:]
-            last_state_list = last_state_list[-1:]
+        # # Return output and last states
+        # if not self.return_all_layers:
+        #     layer_output_list = layer_output_list[-1:]
+        #     last_state_list = last_state_list[-1:]
 
-        # Reshape output to match target output shape
-        output = layer_output_list[-1]
-        output = output.squeeze().permute(0, 1, 3, 2, 4)
-        output = output.transpose(1, 2)[:, :, :, 0, 0]
-        return output, last_state_list
+        # Predict future steps
+        predictions = []
+        cur_input = layer_output[:, -1, :, :, :].unsqueeze(
+            1
+        )  # Use the last output as the starting input for future steps
+
+        for step in range(self.future_steps):
+            future_hidden_states = []
+            cur_layer_input = cur_input
+
+            for layer_idx in range(self.num_layers):
+                h, c = last_state_list[layer_idx]
+                h, c = self.cell_list[layer_idx](
+                    input_tensor=cur_layer_input[:, 0, :, :, :], cur_state=[h, c]
+                )
+                future_hidden_states.append([h, c])
+                cur_layer_input = h.unsqueeze(1)  # Prepare for the next step
+
+            last_state_list = (
+                future_hidden_states  # Update hidden states for the next step
+            )
+            predictions.append(cur_layer_input.squeeze(1))
+
+        predictions = torch.stack(predictions, dim=1)
+        predictions = predictions.permute(0, 2, 1, 3, 4)
+        predictions = predictions.transpose(1, 2)[:, :, :, -1, -1]
+
+        # Apply the fully connected layer to reshape the output to the desired shape
+        predictions = self.fc(predictions)
+
+        return predictions, last_state_list
 
     def _init_hidden(self, batch_size, image_size):
         """
