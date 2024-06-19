@@ -112,6 +112,12 @@ def eval_model(
     dfout.to_parquet(
         f"/home/aevans/convLSTM/src/data/temp_df/{today_date}/{clim_div}/{today_date_hr}_ml_output.parquet"
     )
+    states = model.state_dict()
+    torch.save(
+        states,
+        f"/home/aevans/convLSTM/src/data/temp_df/{today_date}/{clim_div}/{today_date_hr}_ml_output.pth",
+    )
     plot_outputs(
         dfout, train_predict, stations, today_date, today_date_hr, clim_div, target
     )
+

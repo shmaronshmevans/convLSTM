@@ -5,6 +5,7 @@ https://github.com/ndrplz/ConvLSTM_pytorch/tree/master
 
 import torch.nn as nn
 import torch
+import torch.nn.functional as F
 
 
 class ConvLSTMCell(nn.Module):
@@ -182,8 +183,6 @@ class ConvLSTM(nn.Module):
         self._check_kernel_size_consistency(kernel_size)
         kernel_size = self._extend_for_multilayer(kernel_size, num_layers)
         hidden_dim = self._extend_for_multilayer(hidden_dim, num_layers)
-        # if not len(kernel_size) == len(hidden_dim) == num_layers:
-        #     raise ValueError("Inconsistent list length.")
 
         # Store parameters
         self.input_dim = input_dim
@@ -212,6 +211,18 @@ class ConvLSTM(nn.Module):
 
         # Define a fully connected layer to map the output to the desired shape
         self.fc = nn.Linear(hidden_dim[-1], self.target)
+    
+    def average_pooling(self, x: torch.Tensor, target_size: tuple) -> torch.Tensor:
+        n, t, h, w, c = x.shape
+        x = x.permute(0, 4, 1, 2, 3)  # Rearrange to [batch, features, timesteps, height, width]
+        x = x.reshape(n * c, t, h, w)  # Merge batch and features for pooling
+
+        # Downsample the spatial dimensions using average pooling
+        x = F.adaptive_max_pool2d(x, target_size)
+
+        x = x.view(n, c, t, target_size[0], target_size[1])  # Reshape back
+        x = x.permute(0, 2, 3, 4, 1)  # Rearrange to [batch, timesteps, height, width, features]
+        return x
 
     def forward(self, input_tensor, hidden_state=None):
         """
@@ -232,6 +243,9 @@ class ConvLSTM(nn.Module):
         if not self.batch_first:
             # Permute input tensor if batch_first is False
             input_tensor = input_tensor.permute(1, 0, 2, 3, 4)
+
+
+        input_tensor = self.average_pooling(input_tensor, (5,5))
 
         # Get dimensions of input tensor
         b, t, h, w, c = input_tensor.size()
@@ -279,22 +293,35 @@ class ConvLSTM(nn.Module):
             1
         )  # Use the last output as the starting input for future steps
 
-        for step in range(self.future_steps):
-            future_hidden_states = []
-            cur_layer_input = cur_input
+        # for step in range(self.future_steps):
+        #     future_hidden_states = []
+        #     cur_layer_input = cur_input
 
-            for layer_idx in range(self.num_layers):
-                h, c = last_state_list[layer_idx]
-                h, c = self.cell_list[layer_idx](
-                    input_tensor=cur_layer_input[:, 0, :, :, :], cur_state=[h, c]
-                )
-                future_hidden_states.append([h, c])
-                cur_layer_input = h.unsqueeze(1)  # Prepare for the next step
+        #     for layer_idx in range(self.num_layers):
+        #         h, c = last_state_list[layer_idx]
+        #         h, c = self.cell_list[layer_idx](
+        #             input_tensor=cur_layer_input[:, 0, :, :, :], cur_state=[h, c]
+        #         )
+        #         future_hidden_states.append([h, c])
+        #         cur_layer_input = h.unsqueeze(1)  # Prepare for the next step
 
-            last_state_list = (
-                future_hidden_states  # Update hidden states for the next step
+        #     last_state_list = (
+        #         future_hidden_states  # Update hidden states for the next step
+        #     )
+        #     predictions.append(cur_layer_input.squeeze(1))
+
+        for layer_idx in range(self.num_layers):
+            h, c = last_state_list[layer_idx]
+            h, c = self.cell_list[layer_idx](
+                input_tensor=cur_layer_input[:, 0, :, :, :], cur_state=[h, c]
             )
-            predictions.append(cur_layer_input.squeeze(1))
+            # future_hidden_states.append([h, c])
+            cur_layer_input = h.unsqueeze(1)  # Prepare for the next step
+
+        # last_state_list = (
+        #     future_hidden_states  # Update hidden states for the next step
+        # )
+        predictions.append(cur_layer_input.squeeze(1))
 
         predictions = torch.stack(predictions, dim=1)
         predictions = predictions.permute(0, 2, 1, 3, 4)

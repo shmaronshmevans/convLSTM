@@ -22,6 +22,7 @@ from evaluate import save_output
 from processing import read_in_images
 
 
+
 class ImageSequenceDataset(Dataset):
     def __init__(self, image_list, dataframe, target, sequence_length, transform=None):
         self.image_list = image_list
@@ -31,40 +32,38 @@ class ImageSequenceDataset(Dataset):
         self.target = target
 
     def __len__(self):
-        # Adjust the length to accommodate sequences that might not be a perfect multiple
-        return (len(self.image_list) + self.sequence_length - 1) // self.sequence_length
+        return len(self.image_list)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, i):
         images = []
-        start_idx = idx * self.sequence_length
+        i_start = max(0, i - self.sequence_length + 1)
 
-        for i in range(self.sequence_length):
-            if start_idx + i < len(self.image_list):
-                img_name = self.image_list[start_idx + i]
-                image = np.load(img_name)
-                image = image.astype(np.float32)
+        for j in range(i_start, i + 1):
+            if j < len(self.image_list):
+                img_name = self.image_list[j]
+                image = np.load(img_name).astype(np.float32)
                 image = image[:, :, 3:]
                 if self.transform:
                     image = self.transform(image)
                 images.append(torch.tensor(image))
             else:
-                # Pad with zeros if the sequence is shorter than `sequence_length`
-                pad_image = torch.zeros_like(torch.tensor(image))
+                pad_image = torch.zeros_like(images[0])
                 images.append(pad_image)
 
-        images = torch.stack(images)
+        while len(images) < self.sequence_length:
+            pad_image = torch.zeros_like(images[0])
+            images.insert(0, pad_image)
 
-        y = self.dataframe[self.target].values[
-            start_idx : start_idx + self.sequence_length
-        ]
+        images = torch.stack(images)
+        images = images.to(torch.float32)
+
+        # Extract target values
+        y = self.dataframe[self.target].values[i_start : i + 1]
         if len(y) < self.sequence_length:
-            # Pad target if it is shorter than `sequence_length`
-            y = np.pad(
-                y, (0, self.sequence_length - len(y)), "constant", constant_values=0
-            )
+            pad_width = (self.sequence_length - len(y), 0)
+            y = np.pad(y, (pad_width, (0, 0)), "constant", constant_values=0)
 
         y = torch.tensor(y).to(torch.float32)
-
         return images, y
 
 
@@ -212,8 +211,8 @@ config = {
     # Declare your hyperparameters:
     "parameters": {
         "num_layers": {"type": "integer", "min": 1, "max": 20},
-        "kernel_size": {"type": "integer", "min": 1, "max": 20},
-        "sequence_length": {"type": "integer", "min": 36, "max": 500},
+        "kernel_size": {"type": "discrete", "values": [1,3,5,7,9]},
+        "sequence_length": {"type": "integer", "min": 1, "max": 120},
         "learning_rate": {"type": "float", "min": 5e-20, "max": 1e-3},
     },
     "trials": 30,

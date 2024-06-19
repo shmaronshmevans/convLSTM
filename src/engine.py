@@ -27,25 +27,29 @@ import numpy as np
 
 
 class ImageSequenceDataset(Dataset):
-    def __init__(self, image_list, dataframe, target, sequence_length, transform=None):
+    def __init__(self, image_list, dataframe, target, sequence_length, forecast_hour, transform=None):
         self.image_list = image_list
         self.dataframe = dataframe
         self.transform = transform
         self.sequence_length = sequence_length
         self.target = target
+        self.forecast_hour = forecast_hour
 
     def __len__(self):
         return len(self.image_list)
 
     def __getitem__(self, i):
         images = []
-        i_start = max(0, i - self.sequence_length + 1)
+        x_start = i
+        x_end = i + self.sequence_length
+        y_start = x_end
+        y_end = y_start + self.forecast_hour
 
-        for j in range(i_start, i + 1):
+        for j in range(x_start, x_end):
             if j < len(self.image_list):
                 img_name = self.image_list[j]
                 image = np.load(img_name).astype(np.float32)
-                image = image[:, :, 3:]
+                image = image[:, :, 4:]
                 if self.transform:
                     image = self.transform(image)
                 images.append(torch.tensor(image))
@@ -61,7 +65,7 @@ class ImageSequenceDataset(Dataset):
         images = images.to(torch.float32)
 
         # Extract target values
-        y = self.dataframe[self.target].values[i_start : i + 1]
+        y = self.dataframe[self.target].values[y_start : y_end]
         if len(y) < self.sequence_length:
             pad_width = (self.sequence_length - len(y), 0)
             y = np.pad(y, (pad_width, (0, 0)), "constant", constant_values=0)
@@ -91,6 +95,7 @@ def train_model(data_loader, model, optimizer, device, epoch, loss_func):
         # Track the total loss and the number of processed samples.
         total_loss += loss.item()
         gc.collect()
+        torch.cuda.empty_cache()
 
     # Synchronize and aggregate losses in distributed training.
     # dist.all_reduce(ddp_loss, op=dist.ReduceOp.SUM)
@@ -122,6 +127,7 @@ def test_model(data_loader, model, device, epoch, loss_func):
         # Compute loss and add it to the total loss.
         total_loss += loss_func(output[:, -1, :], y.squeeze()[:, -1, :]).item()
         gc.collect()
+        torch.cuda.empty_cache()
 
     # Calculate the average test loss.
     avg_loss = total_loss / num_batches
@@ -129,6 +135,22 @@ def test_model(data_loader, model, device, epoch, loss_func):
 
     return avg_loss
 
+class EarlyStopper:
+    def __init__(self, patience, min_delta=0):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.counter = 0
+        self.min_validation_loss = np.inf
+
+    def early_stop(self, validation_loss):
+        if validation_loss < self.min_validation_loss:
+            self.min_validation_loss = validation_loss
+            self.counter = 0
+        elif validation_loss > (self.min_validation_loss + self.min_delta):
+            self.counter += 1
+            if self.counter >= self.patience:
+                return True
+        return False
 
 def main(
     EPOCHS,
@@ -151,32 +173,19 @@ def main(
     # Use GPU if available
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     today_date, today_date_hr = get_time_title.get_time_title(CLIM_DIV)
-    # create data
-    # df_train_ls, df_test_ls, features, stations = (
-    #     create_data_for_convLSTM.create_data_for_model(
-    #         CLIM_DIV, today_date, forecast_hour, single
-    #     )
-    # )
 
+    # create data
     train_df, test_df, train_ims, test_ims, target, stations = (
         read_in_images.create_data_for_model(CLIM_DIV)
     )
 
-    # # load datasets
-    # train_dataset = MultiStationDataset(
-    #     df_train_ls, "target_error", features, sequence_length, forecast_hour
-    # )
-    # test_dataset = MultiStationDataset(
-    #     df_test_ls, "target_error", features, sequence_length, forecast_hour
-    # )
-
-    train_dataset = ImageSequenceDataset(train_ims, train_df, target, sequence_length)
-    test_dataset = ImageSequenceDataset(test_ims, test_df, target, sequence_length)
+    train_dataset = ImageSequenceDataset(train_ims, train_df, target, sequence_length, forecast_hour)
+    test_dataset = ImageSequenceDataset(test_ims, test_df, target, sequence_length, forecast_hour)
 
     # define model parameters
     ml = model.ConvLSTM(
-        input_dim=int(26),
-        hidden_dim=[26, 26],
+        input_dim=int(25),
+        hidden_dim=[150, 100, 25], # need to have as many in list as number of layers; last entry must match input dim
         kernel_size=kernel_size,
         num_layers=num_layers,
         target=len(target),
@@ -207,7 +216,7 @@ def main(
         "num_layers": num_layers,
         "kernel_size": kernel_size,
     }
-    # early_stopper = EarlyStopper(20)
+    early_stopper = EarlyStopper(20)
 
     for ix_epoch in range(1, EPOCHS + 1):
         print("Epoch", ix_epoch)
@@ -221,9 +230,9 @@ def main(
         experiment.log_metric("train_loss", train_loss)
         experiment.log_metrics(hyper_params, epoch=ix_epoch)
         scheduler.step(test_loss)
-        # if early_stopper.early_stop(test_loss):
-        #     print(f"Early stopping at epoch {ix_epoch}")
-        #     break
+        if early_stopper.early_stop(test_loss):
+            print(f"Early stopping at epoch {ix_epoch}")
+            break
 
     save_output.eval_model(
         train_loader,
@@ -245,12 +254,12 @@ def main(
 
 main(
     EPOCHS=100,
-    BATCH_SIZE=int(48),
+    BATCH_SIZE=int(700),
     LEARNING_RATE=7e-5,
     CLIM_DIV="Mohawk Valley",
     sequence_length=12,
     forecast_hour=4,
-    num_layers=2,
+    num_layers=3,
     kernel_size=(3, 3),
     single=False,
 )
